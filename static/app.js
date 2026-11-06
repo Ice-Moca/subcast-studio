@@ -820,35 +820,33 @@ btnRenderVideo.addEventListener("click", async () => {
     splitClipsList.innerHTML = "";
     (data.timeline || []).forEach((item) => {
       const clipRow = document.createElement("div");
-      clipRow.className = "diff-row";
-      clipRow.style.gridTemplateColumns = "36px 1fr auto";
-      clipRow.style.alignItems = "center";
+      clipRow.className = "split-clip-row";
 
-      let btnsHtml = `<div class="download-grid" style="justify-content: flex-end;">`;
+      let btnsHtml = `<div class="split-clip-actions">`;
       if (item.audio_url) {
-        btnsHtml += `<a href="${item.audio_url}" download="line_${String(item.index).padStart(2, "0")}.wav" class="btn btn-sm" onclick="event.stopPropagation()">음성 (.WAV)</a>`;
+        btnsHtml += `<a href="${item.audio_url}" download="line_${String(item.index).padStart(2, "0")}.wav" class="btn btn-sm" onclick="event.stopPropagation()">음성 WAV</a>`;
       }
       if (item.mov_url) {
-        btnsHtml += `<a href="${item.mov_url}" download="line_${String(item.index).padStart(2, "0")}_alpha.mov" class="btn btn-primary btn-sm" onclick="event.stopPropagation()">투명영상 (.MOV)</a>`;
+        btnsHtml += `<a href="${item.mov_url}" download="line_${String(item.index).padStart(2, "0")}_alpha.mov" class="btn btn-primary btn-sm" onclick="event.stopPropagation()">투명 MOV</a>`;
       }
       if (item.webm_url) {
-        btnsHtml += `<a href="${item.webm_url}" download="line_${String(item.index).padStart(2, "0")}_alpha.webm" class="btn btn-sm" onclick="event.stopPropagation()">투명영상 (.WebM)</a>`;
+        btnsHtml += `<a href="${item.webm_url}" download="line_${String(item.index).padStart(2, "0")}_alpha.webm" class="btn btn-sm" onclick="event.stopPropagation()">투명 WebM</a>`;
       }
       if (item.png_url) {
-        btnsHtml += `<a href="${item.png_url}" download="line_${String(item.index).padStart(2, "0")}.png" class="btn btn-sm" onclick="event.stopPropagation()">자막 (.PNG)</a>`;
+        btnsHtml += `<a href="${item.png_url}" download="line_${String(item.index).padStart(2, "0")}.png" class="btn btn-sm" onclick="event.stopPropagation()">자막 PNG</a>`;
       }
       btnsHtml += `</div>`;
 
       clipRow.innerHTML = `
-        <div class="diff-idx">#${item.index}</div>
-        <div class="diff-content">
-          <div class="diff-display">${escapeHtml(item.display_text)}</div>
-          <div class="diff-spoken">
-            <span class="diff-badge">${item.duration}s</span>
-            <span>${item.spoken_text ? escapeHtml(item.spoken_text) : "무음 자막 클립"}</span>
-          </div>
+        <div class="split-clip-top">
+          <span class="diff-idx">#${item.index}</span>
+          <span class="diff-badge">${item.duration}s</span>
+          <span class="split-clip-title" title="${escapeHtml(item.display_text)}">${escapeHtml(item.display_text)}</span>
         </div>
-        ${btnsHtml}
+        <div class="split-clip-bottom">
+          <span class="split-clip-spoken">TTS: ${item.spoken_text ? escapeHtml(item.spoken_text) : "무음 클립"}</span>
+          ${btnsHtml}
+        </div>
       `;
 
       clipRow.addEventListener("click", () => {
