@@ -34,8 +34,9 @@ STATIC_DIR = BUNDLE_DIR / "static"
 UPLOADS_DIR = WORK_DIR / "uploads"
 OUTPUTS_DIR = WORK_DIR / "outputs"
 FONTS_DIR = WORK_DIR / "fonts"
+MODELS_DIR = WORK_DIR / "models"
 
-for d in [UPLOADS_DIR, OUTPUTS_DIR, FONTS_DIR]:
+for d in [UPLOADS_DIR, OUTPUTS_DIR, FONTS_DIR, MODELS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Subtitle & Typecast Overlay Studio")
@@ -897,8 +898,32 @@ _whisper_models: Dict[str, Any] = {}
 def get_whisper_model(model_size: str):
     from faster_whisper import WhisperModel
     if model_size not in _whisper_models:
-        _whisper_models[model_size] = WhisperModel(model_size, device="cpu", compute_type="int8")
+        try:
+            _whisper_models[model_size] = WhisperModel(
+                model_size,
+                device="cpu",
+                compute_type="int8",
+                download_root=str(MODELS_DIR),
+                local_files_only=True,
+            )
+        except Exception:
+            _whisper_models[model_size] = WhisperModel(
+                model_size,
+                device="cpu",
+                compute_type="int8",
+                download_root=str(MODELS_DIR),
+            )
     return _whisper_models[model_size]
+
+
+def load_wav_16k_float32(wav_path: Path):
+    """Loads a 16kHz mono 16-bit PCM WAV file into a float32 numpy array for faster-whisper."""
+    import wave
+    import numpy as np
+
+    with wave.open(str(wav_path), "rb") as wf:
+        raw_frames = wf.readframes(wf.getnframes())
+    return np.frombuffer(raw_frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 @app.post("/api/stt/transcribe")
@@ -941,8 +966,9 @@ async def transcribe_media(
     try:
         model = get_whisper_model(model_size)
         lang_arg = None if language == "auto" else language
+        audio_np = load_wav_16k_float32(wav_16k)
         segments_gen, info = model.transcribe(
-            str(wav_16k),
+            audio_np,
             language=lang_arg,
             beam_size=5,
             vad_filter=True,

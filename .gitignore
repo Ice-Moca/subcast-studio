@@ -9,6 +9,7 @@ build/
 dist/
 *.spec
 release_artifacts/
+models/
 
 # Runtime generated media & uploads
 uploads/*
