@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#2E3440" />
+  <title>SUBCAST STUDIO</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <!-- Floating Rounded Pill Header -->
+  <header class="topbar">
+    <div class="brand-group">
+      <div class="brand-mark">SC</div>
+      <span class="brand-title">SUBCAST</span>
+    </div>
+
+    <!-- AI Proxy FE Dev Guide Style Pill Toggle -->
+    <nav class="devguide-pill-list" aria-label="모드 전환">
+      <button type="button" class="devguide-pill-trigger mode-tab active" data-target="view-tts" id="tab-btn-tts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="3"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <span>TTS 자막 영상</span>
+      </button>
+      <button type="button" class="devguide-pill-trigger mode-tab" data-target="view-stt" id="tab-btn-stt">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+        <span>영상 자막 추출 (STT)</span>
+      </button>
+    </nav>
+
+    <div class="status-pill">
+      <span class="status-dot"></span>
+      <span>16:9 Alpha Ready</span>
+    </div>
+  </header>
+
+  <!-- =========================================================================
+       MODE 1: TTS + 16:9 Transparent Subtitle Video
+       3-Column Floating Rounded Layout:
+       [Left: Tall Script Editor + Voice Mode] [Center: 16:9 Monitor + Line TTS Editor] [Right: Subtitle Style]
+       ========================================================================= -->
+  <main id="view-tts" class="workspace-view active">
+    <!-- Left Column: Long Script Editor + Pronunciation Filters + Voice Mode -->
+    <section class="col-left">
+      <div class="rounded-card script-full-card">
+        <div class="section-head">
+          <span class="section-heading">대본 입력</span>
+          <span class="mono-val" id="line-count-badge">3줄</span>
+        </div>
+
+        <textarea
+          id="script-input"
+          class="script-editor"
+          placeholder="긴 대본을 붙여넣으세요. 줄바꿈(Enter) 기준으로 클립이 분리됩니다."
+        >안녕하세요! 2026년 100% 자동화 자막 스튜디오입니다 ★
+숫자(123)나 특수문자(#@!)는 자막에만 표기되고,
+TTS 성우는 제외하고 자연스럽게 읽습니다!</textarea>
+
+        <!-- Pronunciation Exclusion Pill Toggles -->
+        <div id="pronunciation-filter-card" class="filter-bar">
+          <div class="chip-toggle-row">
+            <label class="filter-pill" for="chk-exclude-numbers">
+              <input type="checkbox" id="chk-exclude-numbers" checked />
+              <span>숫자 제외 (0-9)</span>
+            </label>
+            <label class="filter-pill" for="chk-exclude-special">
+              <input type="checkbox" id="chk-exclude-special" checked />
+              <span>특수문자 제외</span>
+            </label>
+          </div>
+          <input
+            type="text"
+            id="custom-exclude-input"
+            placeholder="추가 제외 문자 (예: []※)"
+          />
+        </div>
+      </div>
+
+      <!-- Voice Mode Card -->
+      <div class="rounded-card control-card">
+        <div class="section-head">
+          <span class="section-heading">음성 모드</span>
+        </div>
+
+        <input type="checkbox" id="toggle-no-voice" style="display: none;" />
+
+        <div class="devguide-pill-list full-width" role="tablist" aria-label="음성 생성 여부">
+          <button type="button" class="devguide-pill-trigger active" id="pill-voice-on">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+            <span>TTS 음성 생성</span>
+          </button>
+          <button type="button" class="devguide-pill-trigger warn-tone" id="pill-voice-off">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+            <span>음성 없음 (2.0초)</span>
+          </button>
+        </div>
+
+        <!-- Shown when "No Voice" is ON -->
+        <div id="no-voice-duration-box" style="display: none; flex-direction: column; gap: 6px; padding-top: 4px;">
+          <label class="field-label" for="line-duration-slider">
+            <span>줄당 표시 시간</span>
+            <span class="mono-val" id="val-line-duration" style="color: var(--nord13);">2.0s</span>
+          </label>
+          <input type="range" id="line-duration-slider" min="0.8" max="8.0" step="0.1" value="2.0" />
+        </div>
+
+        <!-- Shown when TTS Voice is ON -->
+        <div id="tts-controls-body" style="display: flex; flex-direction: column; gap: 12px; padding-top: 4px;">
+          <select id="tts-engine-select" style="display: none;">
+            <option value="typecast">typecast</option>
+            <option value="edge" selected>edge</option>
+            <option value="macos">macos</option>
+          </select>
+
+          <div class="devguide-pill-list full-width" role="tablist" aria-label="TTS 엔진">
+            <button type="button" class="devguide-pill-trigger engine-pill" data-engine="typecast">Typecast</button>
+            <button type="button" class="devguide-pill-trigger engine-pill active" data-engine="edge">Edge Neural</button>
+            <button type="button" class="devguide-pill-trigger engine-pill" data-engine="macos">Local</button>
+          </div>
+
+          <!-- Typecast Specific Settings -->
+          <div id="typecast-config-box" style="display: none; flex-direction: column; gap: 8px;">
+            <div style="display: flex; gap: 6px;">
+              <input
+                type="password"
+                id="typecast-api-key"
+                placeholder="Typecast API Key"
+                autocomplete="off"
+                style="flex: 1;"
+              />
+              <button type="button" class="btn btn-sm" id="btn-fetch-actors">성우 조회</button>
+            </div>
+
+            <div class="field-row">
+              <input type="text" id="typecast-actor-id" placeholder="Actor ID" />
+              <select id="typecast-emotion">
+                <option value="normal-1">기본 톤</option>
+                <option value="happy-1">밝음</option>
+                <option value="sad-1">차분함</option>
+                <option value="angry-1">강조</option>
+                <option value="tonemid-1">내레이션</option>
+              </select>
+            </div>
+
+            <div class="field-group" id="actor-select-wrap" style="display: none;">
+              <select id="typecast-actor-select"></select>
+            </div>
+          </div>
+
+          <!-- Edge TTS Specific Settings -->
+          <div id="edge-config-box" class="field-group">
+            <select id="edge-voice-select">
+              <option value="ko-KR-SunHiNeural">선희 (여성 · 아나운서)</option>
+              <option value="ko-KR-InJoonNeural">인준 (남성 · 차분함)</option>
+              <option value="ko-KR-HyunsuNeural">현수 (남성 · 내레이션)</option>
+            </select>
+          </div>
+
+          <div class="field-row">
+            <div class="field-group">
+              <label class="field-label" for="tts-speed">
+                <span>속도</span>
+                <span class="mono-val" id="val-tts-speed">1.00x</span>
+              </label>
+              <input type="range" id="tts-speed" min="0.6" max="1.6" step="0.05" value="1.0" />
+            </div>
+
+            <div class="field-group">
+              <label class="field-label" for="tts-pause">
+                <span>줄 간격 여백</span>
+                <span class="mono-val" id="val-tts-pause">0.25s</span>
+              </label>
+              <input type="range" id="tts-pause" min="0.0" max="1.5" step="0.05" value="0.25" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Center Column: 16:9 Stage + Action Bar + Line-by-Line TTS Spoken Editor -->
+    <section class="col-center">
+      <div class="rounded-card stage-card">
+        <div class="stage-bar">
+          <span class="section-heading">16:9 미리보기 <span class="mono-val" style="margin-left: 6px;">1920×1080</span></span>
+
+          <!-- Backdrop Pill Toggle -->
+          <div class="devguide-pill-list" role="group" aria-label="배경 전환">
+            <button type="button" class="devguide-pill-trigger backdrop-btn active" data-bg="bg-checker" style="padding: 5px 12px; font-size: 0.76rem;">투명 격자</button>
+            <button type="button" class="devguide-pill-trigger backdrop-btn" data-bg="bg-dark" style="padding: 5px 12px; font-size: 0.76rem;">다크</button>
+            <button type="button" class="devguide-pill-trigger backdrop-btn" data-bg="bg-green" style="padding: 5px 12px; font-size: 0.76rem;">크로마키</button>
+          </div>
+        </div>
+
+        <!-- 16:9 Canvas Stage -->
+        <div class="monitor-frame bg-checker" id="monitor-stage">
+          <div class="monitor-overlay-badge" id="preview-line-indicator">LINE #1</div>
+          <div class="monitor-voice-badge" id="preview-voice-badge">TTS 활성</div>
+          <canvas id="preview-canvas" width="1920" height="1080"></canvas>
+        </div>
+
+        <!-- Compact Rounded Action Bar -->
+        <div class="action-bar">
+          <select id="export-format-select" aria-label="출력 포맷">
+            <option value="both" selected>ProRes 4444 (.mov) + VP9 Alpha (.webm)</option>
+            <option value="mov">ProRes 4444 (.mov 편집기용)</option>
+            <option value="webm">VP9 Alpha (.webm 웹/OBS용)</option>
+          </select>
+          <button type="button" class="btn btn-primary" id="btn-render-video">
+            <span id="btn-render-label">영상 생성</span>
+          </button>
+        </div>
+
+        <div id="render-progress-wrap" style="display: none; flex-direction: column; gap: 6px;">
+          <span id="render-status-msg" style="font-size: 0.8rem; color: var(--text-secondary);">렌더링 중...</span>
+          <progress id="render-progress-bar"></progress>
+        </div>
+
+        <!-- Render Complete Output -->
+        <div class="render-output-card" id="render-result-card">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <strong style="font-size: 0.9rem; color: var(--nord14);">생성 완료</strong>
+            <span class="mono-val" id="render-duration-badge">0.0초</span>
+          </div>
+
+          <video
+            id="rendered-video-player"
+            controls
+            style="width: 100%; max-height: 200px; border-radius: 14px; border: 1px solid var(--ring-border); background: repeating-conic-gradient(#262b36 0 25%, #323947 0 50%) 0 / 20px 20px;"
+          ></video>
+
+          <div class="download-grid" id="render-download-links"></div>
+
+          <div style="border-top: 1px solid var(--glass-border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+            <span style="font-size: 0.8rem; font-weight: 700; color: var(--nord8);">줄별 분리 클립 (Enter 기준)</span>
+            <div class="diff-list" id="split-clips-list" style="max-height: 240px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Line-by-Line Subtitle & Direct TTS Spoken Text Editor Card -->
+      <div class="rounded-card lines-card">
+        <div class="section-head">
+          <span class="section-heading">줄별 자막 · TTS 대사 직접 수정</span>
+        </div>
+        <div class="diff-list" id="script-diff-list"></div>
+      </div>
+    </section>
+
+    <!-- Right Column: Subtitle Style Controls -->
+    <aside class="col-right">
+      <div class="rounded-card control-card">
+        <!-- Nord Quick Presets -->
+        <div class="control-section">
+          <div class="section-head">
+            <span class="section-heading">테마 프리셋</span>
+          </div>
+          <div class="preset-chips">
+            <button type="button" class="preset-chip" data-preset="snow">Snow</button>
+            <button type="button" class="preset-chip" data-preset="frost">Frost</button>
+            <button type="button" class="preset-chip" data-preset="aurora">Aurora</button>
+            <button type="button" class="preset-chip" data-preset="box">Box</button>
+          </div>
+        </div>
+
+        <!-- Font & Position -->
+        <div class="control-section">
+          <div class="section-head">
+            <span class="section-heading">폰트 · 위치</span>
+          </div>
+
+          <select id="font-select" aria-label="폰트 선택"></select>
+          <input type="file" id="font-upload-input" accept=".ttf,.otf,.ttc" aria-label="폰트 파일 업로드" />
+
+          <div class="field-row">
+            <div class="field-group">
+              <label class="field-label" for="font-size-slider">
+                <span>크기</span>
+                <span class="mono-val" id="val-font-size">68px</span>
+              </label>
+              <input type="range" id="font-size-slider" min="28" max="140" value="68" />
+            </div>
+
+            <div class="field-group">
+              <label class="field-label" for="sub-y-slider">
+                <span>수직 위치</span>
+                <span class="mono-val" id="val-sub-y">84%</span>
+              </label>
+              <input type="range" id="sub-y-slider" min="15" max="92" value="84" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Color & Stroke -->
+        <div class="control-section">
+          <div class="section-head">
+            <span class="section-heading">색상 · 외곽선</span>
+          </div>
+
+          <div class="field-row">
+            <div class="field-group">
+              <label class="field-label" for="text-color-picker">글자</label>
+              <div class="color-picker-wrap">
+                <input type="color" id="text-color-picker" value="#ECEFF4" />
+                <input type="text" id="text-color-hex" class="color-hex" value="#ECEFF4" />
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label" for="stroke-color-picker">외곽선</label>
+              <div class="color-picker-wrap">
+                <input type="color" id="stroke-color-picker" value="#2E3440" />
+                <input type="text" id="stroke-color-hex" class="color-hex" value="#2E3440" />
+              </div>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="stroke-width-slider">
+              <span>외곽선 두께</span>
+              <span class="mono-val" id="val-stroke-width">4px</span>
+            </label>
+            <input type="range" id="stroke-width-slider" min="0" max="16" value="4" />
+          </div>
+        </div>
+
+        <!-- Drop Shadow -->
+        <div class="control-section">
+          <div class="section-head">
+            <span class="section-heading">그림자</span>
+            <input type="checkbox" id="chk-shadow-enabled" class="toggle-switch" switch checked aria-label="그림자 사용" />
+          </div>
+
+          <div class="field-row">
+            <div class="field-group">
+              <label class="field-label" for="shadow-color-picker">색상</label>
+              <div class="color-picker-wrap">
+                <input type="color" id="shadow-color-picker" value="#2E3440" />
+                <input type="text" id="shadow-color-hex" class="color-hex" value="#2E3440" />
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label" for="shadow-opacity-slider">
+                <span>투명도</span>
+                <span class="mono-val" id="val-shadow-opacity">80%</span>
+              </label>
+              <input type="range" id="shadow-opacity-slider" min="0" max="100" value="80" />
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field-group">
+              <label class="field-label" for="shadow-x-slider">
+                <span>X 거리</span>
+                <span class="mono-val" id="val-shadow-x">4px</span>
+              </label>
+              <input type="range" id="shadow-x-slider" min="-25" max="25" value="4" />
+            </div>
+
+            <div class="field-group">
+              <label class="field-label" for="shadow-y-slider">
+                <span>Y 거리</span>
+                <span class="mono-val" id="val-shadow-y">6px</span>
+              </label>
+              <input type="range" id="shadow-y-slider" min="-25" max="25" value="6" />
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="shadow-blur-slider">
+              <span>블러 번짐</span>
+              <span class="mono-val" id="val-shadow-blur">8px</span>
+            </label>
+            <input type="range" id="shadow-blur-slider" min="0" max="30" value="8" />
+          </div>
+        </div>
+
+        <!-- Background Box -->
+        <div class="control-section">
+          <div class="section-head">
+            <span class="section-heading">배경 박스</span>
+            <input type="checkbox" id="chk-bgbox-enabled" class="toggle-switch" switch aria-label="배경 박스 사용" />
+          </div>
+
+          <div class="field-row">
+            <div class="field-group">
+              <label class="field-label" for="bgbox-color-picker">색상</label>
+              <div class="color-picker-wrap">
+                <input type="color" id="bgbox-color-picker" value="#2E3440" />
+                <input type="text" id="bgbox-color-hex" class="color-hex" value="#2E3440" />
+              </div>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="bgbox-opacity-slider">
+                <span>불투명도</span>
+                <span class="mono-val" id="val-bgbox-opacity">65%</span>
+              </label>
+              <input type="range" id="bgbox-opacity-slider" min="10" max="100" value="65" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- =========================================================================
+       MODE 2: Video Speech Recognition (Whisper STT)
+       ========================================================================= -->
+  <main id="view-stt" class="workspace-view">
+    <section class="col-left">
+      <div class="rounded-card control-card">
+        <div class="control-section">
+          <span class="section-heading">영상 / 오디오 파일</span>
+          <div class="dropzone" id="stt-dropzone">
+            <div style="font-weight: 700; font-size: 0.9rem; color: var(--nord6);">파일 드롭 또는 선택</div>
+            <input type="file" id="stt-file-input" accept="video/*,audio/*" />
+          </div>
+          <video
+            id="stt-video-preview"
+            controls
+            style="display: none; width: 100%; border-radius: 14px; border: 1px solid var(--ring-border); background: #000;"
+          ></video>
+        </div>
+
+        <div class="control-section">
+          <span class="section-heading">Whisper 인식 옵션</span>
+          <div class="field-row">
+            <div class="field-group">
+              <label class="field-label" for="stt-lang-select">언어</label>
+              <select id="stt-lang-select">
+                <option value="ko" selected>한국어</option>
+                <option value="en">영어</option>
+                <option value="ja">일본어</option>
+                <option value="auto">자동 감지</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="stt-model-select">모델</label>
+              <select id="stt-model-select">
+                <option value="tiny">Tiny</option>
+                <option value="base" selected>Base</option>
+                <option value="small">Small</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="chip-toggle-row">
+            <label class="filter-pill" for="stt-exclude-numbers">
+              <input type="checkbox" id="stt-exclude-numbers" />
+              <span>숫자 제외</span>
+            </label>
+            <label class="filter-pill" for="stt-exclude-special">
+              <input type="checkbox" id="stt-exclude-special" />
+              <span>특수문자 제외</span>
+            </label>
+          </div>
+
+          <button type="button" class="btn btn-primary" id="btn-run-stt" style="width: 100%;">
+            <span>자막 추출 시작</span>
+          </button>
+
+          <div id="stt-progress-wrap" style="display: none; flex-direction: column; gap: 6px;">
+            <span id="stt-status-text" style="font-size: 0.8rem; color: var(--text-secondary);">Whisper 음성 분석 중...</span>
+            <progress></progress>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="col-center" style="grid-column: span 2;">
+      <div class="rounded-card stage-card" style="min-height: 540px;">
+        <div class="stage-bar">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="section-heading">추출된 자막</span>
+            <span class="mono-val" id="stt-segment-count">0개</span>
+          </div>
+
+          <div class="download-grid" id="stt-export-buttons">
+            <button type="button" class="btn btn-sm" id="btn-send-to-tts" disabled>TTS 대본으로 보내기</button>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-save-edited-srt" disabled>수정 반영 저장</button>
+          </div>
+        </div>
+
+        <div class="download-grid" id="stt-download-links"></div>
+
+        <div class="stt-segments-container" id="stt-segments-list">
+          <div style="padding: 48px 20px; text-align: center; color: var(--text-muted); font-size: 0.9rem;">
+            좌측 패널에서 영상을 업로드하고 자막 추출을 실행하세요.
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

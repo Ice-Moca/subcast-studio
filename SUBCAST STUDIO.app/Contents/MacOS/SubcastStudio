@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# SUBCAST STUDIO macOS App Bundle Launcher
+APP_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$APP_ROOT"
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# If already running on port 8765, just open the browser
+if lsof -i :8765 >/dev/null 2>&1; then
+  open "http://127.0.0.1:8765"
+  exit 0
+fi
+
+# Open Terminal or run in background and open browser
+osascript -e "tell application \"Terminal\" to do script \"cd '$APP_ROOT' && ./실행하기_Mac.command\"" -e "tell application \"Terminal\" to activate"

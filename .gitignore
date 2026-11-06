@@ -1,0 +1,22 @@
+# Virtual environments & caches
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build / packaging outputs
+build/
+dist/
+*.spec
+release_artifacts/
+
+# Runtime generated media & uploads
+uploads/*
+!uploads/.gitkeep
+outputs/*
+!outputs/.gitkeep
+fonts/*
+!fonts/.gitkeep
+
+# OS files
+.DS_Store
