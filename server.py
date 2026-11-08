@@ -19,15 +19,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# Ensure common macOS/Homebrew and bundled bin directories are on PATH for ffmpeg/ffprobe
+# Ensure common macOS/Homebrew, Windows, and bundled bin directories are on PATH for ffmpeg/ffprobe
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     BUNDLE_DIR = Path(sys._MEIPASS)
+    EXE_DIR = Path(sys.executable).resolve().parent
     WORK_DIR = Path.home() / "Library" / "Application Support" / "SubcastStudio"
-    os.environ["PATH"] = f"{BUNDLE_DIR}:{os.environ.get('PATH', '')}:/opt/homebrew/bin:/usr/local/bin"
+    extra_paths = [str(EXE_DIR), str(BUNDLE_DIR), os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin"]
+    os.environ["PATH"] = os.pathsep.join([p for p in extra_paths if p])
 else:
     BUNDLE_DIR = Path(__file__).resolve().parent
     WORK_DIR = BUNDLE_DIR
-    os.environ["PATH"] = f"{os.environ.get('PATH', '')}:/opt/homebrew/bin:/usr/local/bin"
+    extra_paths = [str(BUNDLE_DIR), os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin"]
+    os.environ["PATH"] = os.pathsep.join([p for p in extra_paths if p])
 
 BASE_DIR = WORK_DIR
 STATIC_DIR = BUNDLE_DIR / "static"
@@ -41,11 +44,13 @@ for d in [UPLOADS_DIR, OUTPUTS_DIR, FONTS_DIR, MODELS_DIR]:
 
 app = FastAPI(title="Subtitle & Typecast Overlay Studio")
 
-# System default Korean fonts on macOS
+# System default Korean fonts on macOS & Windows
 DEFAULT_FONTS = [
     {"id": "system-apple-sd", "name": "Apple SD 산돌고딕 Neo (System)", "path": "/System/Library/Fonts/AppleSDGothicNeo.ttc"},
     {"id": "system-apple-gothic", "name": "AppleGothic (System)", "path": "/System/Library/Fonts/Supplemental/AppleGothic.ttf"},
     {"id": "system-arial-uni", "name": "Arial Unicode MS (System)", "path": "/Library/Fonts/Arial Unicode.ttf"},
+    {"id": "system-malgun-bold", "name": "맑은 고딕 Bold (System)", "path": "C:/Windows/Fonts/malgunbd.ttf"},
+    {"id": "system-malgun", "name": "맑은 고딕 (System)", "path": "C:/Windows/Fonts/malgun.ttf"},
 ]
 
 
@@ -926,6 +931,159 @@ def load_wav_16k_float32(wav_path: Path):
     return np.frombuffer(raw_frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def _compute_p90_rms(audio_slice, sr: int = 16000) -> float:
+    import numpy as np
+
+    if len(audio_slice) == 0:
+        return 0.0
+    frame_len = max(1, int(sr * 0.1))
+    n_frames = len(audio_slice) // frame_len
+    if n_frames <= 0:
+        return float(np.sqrt(np.mean(np.square(audio_slice))))
+    framed = audio_slice[: n_frames * frame_len].reshape(n_frames, frame_len)
+    rms_per_frame = np.sqrt(np.mean(np.square(framed), axis=1))
+    return float(np.percentile(rms_per_frame, 90))
+
+
+def _find_quietest_split_sample(audio_np, target_sample: int, search_radius_samples: int, sr: int = 16000) -> int:
+    import numpy as np
+
+    total = len(audio_np)
+    lo = max(0, target_sample - search_radius_samples)
+    hi = min(total, target_sample + search_radius_samples)
+    if hi - lo < int(sr * 0.2):
+        return max(0, min(total, target_sample))
+
+    win = int(sr * 0.08)
+    step = int(sr * 0.04)
+    best_pos = target_sample
+    best_rms = float("inf")
+    for pos in range(lo, max(lo + 1, hi - win), step):
+        seg = audio_np[pos : pos + win]
+        rms = float(np.mean(np.square(seg)))
+        if rms < best_rms:
+            best_rms = rms
+            best_pos = pos + win // 2
+    return best_pos
+
+
+def build_stt_audio_chunks(audio_np, sr: int = 16000) -> List[tuple]:
+    """
+    Splits arbitrarily long 16kHz audio into contiguous speech chunks (<= 20s each)
+    so that:
+      1. Silero VAD LSTM state is reset every 180s and never saturates on long videos.
+      2. Non-contiguous chunks are NEVER concatenated together (preventing faster-whisper's
+         single_timestamp_ending from skipping 30s of concatenated speech and preventing
+         SpeechTimestampsMap timestamp drift).
+      3. Any gaps (> 1.5s) missed by Silero VAD that still contain audible energy are
+         automatically included as fallback chunks so recognition never drops out mid-video.
+    Returns list of (start_sample, end_sample, is_vad_speech).
+    """
+    total_samples = len(audio_np)
+    if total_samples == 0:
+        return []
+
+    max_chunk_sec = 18.0
+    max_chunk_samples = int(max_chunk_sec * sr)
+    vad_window_samples = int(180.0 * sr)
+
+    vad_speeches: List[Dict[str, int]] = []
+    try:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+        vad_opts = VadOptions(
+            threshold=0.35,
+            min_silence_duration_ms=400,
+            speech_pad_ms=250,
+            max_speech_duration_s=max_chunk_sec,
+        )
+        for win_start in range(0, total_samples, vad_window_samples):
+            win_end = min(total_samples, win_start + vad_window_samples)
+            win_audio = audio_np[win_start:win_end]
+            if len(win_audio) < int(0.1 * sr):
+                continue
+            raw_chunks = get_speech_timestamps(win_audio, vad_opts, sampling_rate=sr)
+            for ch in raw_chunks:
+                s = max(0, win_start + int(ch["start"]))
+                e = min(total_samples, win_start + int(ch["end"]))
+                if e > s:
+                    vad_speeches.append({"start": s, "end": e})
+    except Exception:
+        vad_speeches = []
+
+    # Merge closely spaced VAD intervals up to max_chunk_samples
+    merged_vad: List[Dict[str, int]] = []
+    merge_gap_samples = int(0.35 * sr)
+    for ch in vad_speeches:
+        if not merged_vad:
+            merged_vad.append(dict(ch))
+        else:
+            prev = merged_vad[-1]
+            if ch["start"] <= prev["end"] + merge_gap_samples and (ch["end"] - prev["start"]) <= max_chunk_samples:
+                prev["end"] = max(prev["end"], ch["end"])
+            else:
+                if ch["start"] < prev["end"]:
+                    ch = {"start": prev["end"], "end": max(prev["end"], ch["end"])}
+                if ch["end"] > ch["start"]:
+                    merged_vad.append(ch)
+
+    # Enforce max_chunk_samples on any long VAD interval by splitting at quietest points
+    bounded_vad: List[tuple] = []
+    for ch in merged_vad:
+        cur = ch["start"]
+        end = ch["end"]
+        while end - cur > max_chunk_samples:
+            split_pt = _find_quietest_split_sample(
+                audio_np,
+                cur + int(15.0 * sr),
+                int(2.5 * sr),
+                sr=sr,
+            )
+            if split_pt <= cur + int(1.0 * sr) or split_pt >= end - int(0.5 * sr):
+                split_pt = cur + int(15.0 * sr)
+            bounded_vad.append((cur, split_pt, True))
+            cur = split_pt
+        if end > cur:
+            bounded_vad.append((cur, end, True))
+
+    # Inspect uncovered gaps (> 1.5s) and recover any regions with audible energy
+    all_chunks: List[tuple] = []
+    cursor = 0
+    min_gap_samples = int(1.5 * sr)
+    fallback_win_samples = int(15.0 * sr)
+
+    gaps_to_check: List[tuple] = []
+    for s, e, is_vad in bounded_vad:
+        if s - cursor >= min_gap_samples:
+            gaps_to_check.append((cursor, s))
+        all_chunks.append((s, e, is_vad))
+        cursor = max(cursor, e)
+    if total_samples - cursor >= min_gap_samples:
+        gaps_to_check.append((cursor, total_samples))
+
+    for g_start, g_end in gaps_to_check:
+        cur = g_start
+        while cur < g_end:
+            if g_end - cur <= max_chunk_samples:
+                sub_end = g_end
+            else:
+                sub_end = _find_quietest_split_sample(
+                    audio_np,
+                    cur + fallback_win_samples,
+                    int(2.0 * sr),
+                    sr=sr,
+                )
+                if sub_end <= cur + int(1.0 * sr) or sub_end > g_end:
+                    sub_end = min(g_end, cur + fallback_win_samples)
+            if sub_end - cur >= int(0.25 * sr):
+                if _compute_p90_rms(audio_np[cur:sub_end], sr=sr) > 0.0025:
+                    all_chunks.append((cur, sub_end, False))
+            cur = sub_end
+
+    all_chunks.sort(key=lambda x: x[0])
+    return all_chunks
+
+
 @app.post("/api/stt/transcribe")
 async def transcribe_media(
     file: UploadFile = File(...),
@@ -964,35 +1122,116 @@ async def transcribe_media(
         raise HTTPException(status_code=400, detail=f"영상에서 오디오를 추출하지 못했습니다: {e}")
 
     try:
+        sr = 16000
         model = get_whisper_model(model_size)
         lang_arg = None if language == "auto" else language
         audio_np = load_wav_16k_float32(wav_16k)
-        segments_gen, info = model.transcribe(
-            audio_np,
-            language=lang_arg,
-            beam_size=5,
-            vad_filter=True,
-        )
+        total_duration = round(len(audio_np) / float(sr), 2)
+        detected_lang = language if language != "auto" else "ko"
 
+        chunks = build_stt_audio_chunks(audio_np, sr=sr)
         segments = []
-        for idx, seg in enumerate(segments_gen):
-            text_val = seg.text.strip()
-            if exclude_numbers or exclude_special:
-                text_val = sanitize_spoken_text(
-                    text_val,
-                    exclude_numbers=exclude_numbers,
-                    exclude_special=exclude_special,
-                )
-            if not text_val:
+
+        for c_start, c_end, is_vad_speech in chunks:
+            chunk_offset_sec = c_start / float(sr)
+            chunk_audio = audio_np[c_start:c_end]
+            chunk_dur = len(chunk_audio) / float(sr)
+            if chunk_dur < 0.15:
                 continue
-            segments.append({
-                "index": len(segments) + 1,
-                "start": round(seg.start, 3),
-                "end": round(seg.end, 3),
-                "start_srt": format_srt_timestamp(seg.start),
-                "end_srt": format_srt_timestamp(seg.end),
-                "text": text_val,
-            })
+
+            local_offset_sec = 0.0
+            max_passes = 6
+            pass_num = 0
+
+            while local_offset_sec < chunk_dur - 0.25 and pass_num < max_passes:
+                pass_num += 1
+                sub_start_sample = int(local_offset_sec * sr)
+                sub_audio = chunk_audio[sub_start_sample:]
+                sub_dur = len(sub_audio) / float(sr)
+                if sub_dur < 0.2:
+                    break
+
+                segments_gen, info = model.transcribe(
+                    sub_audio,
+                    language=lang_arg,
+                    beam_size=5,
+                    vad_filter=False,
+                    condition_on_previous_text=False,
+                    word_timestamps=True,
+                    no_speech_threshold=0.75 if is_vad_speech else 0.6,
+                    log_prob_threshold=-1.0,
+                    compression_ratio_threshold=2.4,
+                )
+
+                if lang_arg is None and getattr(info, "language", None):
+                    detected_lang = info.language
+                    lang_arg = detected_lang
+                elif getattr(info, "language", None):
+                    detected_lang = info.language
+
+                sub_segments = list(segments_gen)
+                last_local_end = 0.0
+
+                for seg in sub_segments:
+                    last_local_end = max(last_local_end, float(seg.end))
+
+                    # Filter out likely BGM hallucinations in non-VAD fallback gaps
+                    if not is_vad_speech:
+                        if getattr(seg, "no_speech_prob", 0.0) > 0.65 and getattr(seg, "avg_logprob", 0.0) < -0.7:
+                            continue
+                        if getattr(seg, "compression_ratio", 1.0) > 2.2:
+                            continue
+
+                    text_val = seg.text.strip()
+                    if exclude_numbers or exclude_special:
+                        text_val = sanitize_spoken_text(
+                            text_val,
+                            exclude_numbers=exclude_numbers,
+                            exclude_special=exclude_special,
+                        )
+                    if not text_val:
+                        continue
+
+                    abs_start = round(chunk_offset_sec + local_offset_sec + float(seg.start), 3)
+                    abs_end = round(chunk_offset_sec + local_offset_sec + float(seg.end), 3)
+                    if abs_end <= abs_start:
+                        abs_end = round(abs_start + 0.5, 3)
+
+                    words_payload = []
+                    for w in (getattr(seg, "words", None) or []):
+                        w_str = getattr(w, "word", "")
+                        if not w_str or not w_str.strip():
+                            continue
+                        w_start = round(chunk_offset_sec + local_offset_sec + float(w.start), 3)
+                        w_end = round(chunk_offset_sec + local_offset_sec + float(w.end), 3)
+                        if w_end < w_start:
+                            w_end = w_start
+                        words_payload.append({
+                            "word": w_str,
+                            "start": w_start,
+                            "end": w_end,
+                        })
+
+                    segments.append({
+                        "index": len(segments) + 1,
+                        "start": abs_start,
+                        "end": abs_end,
+                        "start_srt": format_srt_timestamp(abs_start),
+                        "end_srt": format_srt_timestamp(abs_end),
+                        "text": text_val,
+                        "words": words_payload,
+                    })
+
+                # If Whisper stopped early inside the chunk (e.g. single_timestamp_ending),
+                # check if the remaining tail of the chunk still has speech energy and continue.
+                remaining_dur = sub_dur - last_local_end
+                if last_local_end > 0.25 and remaining_dur > 1.8:
+                    tail_start_sample = int((local_offset_sec + last_local_end + 0.08) * sr)
+                    tail_audio = chunk_audio[tail_start_sample:]
+                    if _compute_p90_rms(tail_audio, sr=sr) > 0.0035:
+                        local_offset_sec += last_local_end + 0.05
+                        continue
+                break
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -1004,8 +1243,8 @@ async def transcribe_media(
 
     return {
         "job_id": job_id,
-        "detected_language": getattr(info, "language", language),
-        "duration": round(getattr(info, "duration", 0.0), 2),
+        "detected_language": detected_lang,
+        "duration": total_duration,
         "media_url": f"/outputs/stt_{job_id}/{input_media_path.name}",
         "segments": segments,
         **files_info,

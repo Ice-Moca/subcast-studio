@@ -576,7 +576,17 @@ function escapeHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function parseApiJson(res, fallbackMsg = "요청 처리 중 오류가 발생했습니다.") {
+  const rawText = await res.text();
+  try {
+    return JSON.parse(rawText);
+  } catch (_) {
+    throw new Error(`${fallbackMsg} (HTTP ${res.status}: ${rawText.slice(0, 120) || "서버 응답 오류"})`);
+  }
 }
 
 function hexToRgbaCss(hex, opacity = 1.0) {
@@ -770,7 +780,7 @@ btnRenderVideo.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
+    const data = await parseApiJson(res, "렌더링 중 서버 오류가 발생했습니다. (ffmpeg 설치 여부를 확인해 주세요)");
     if (!res.ok) throw new Error(data.detail || "렌더링 중 오류가 발생했습니다.");
 
     renderDurationBadge.textContent = `총 ${data.total_duration}초 (${data.used_engine})`;
@@ -926,11 +936,12 @@ btnRunStt.addEventListener("click", async () => {
       method: "POST",
       body: formData,
     });
-    const data = await res.json();
+    const data = await parseApiJson(res, "음성 인식 중 서버 오류가 발생했습니다.");
     if (!res.ok) throw new Error(data.detail || "음성 인식 실패");
 
     state.sttSegments = data.segments || [];
-    sttSegmentCount.textContent = `${state.sttSegments.length}개 구간 (${data.detected_language.toUpperCase()})`;
+    state.sttDetectedLang = (data.detected_language || sttLangSelect.value || "ko").toUpperCase();
+    updateSttSegmentCountBadge();
     renderSttSegmentsEditor();
     updateSttDownloadLinks(data);
 
@@ -943,6 +954,143 @@ btnRunStt.addEventListener("click", async () => {
     sttProgressWrap.style.display = "none";
   }
 });
+
+function updateSttSegmentCountBadge() {
+  const langSuffix = state.sttDetectedLang ? ` (${state.sttDetectedLang})` : "";
+  sttSegmentCount.textContent = `${state.sttSegments.length}개 구간${langSuffix}`;
+}
+
+function formatSrtTimestampJs(seconds) {
+  const safeSec = Math.max(0, Number(seconds) || 0);
+  const ms = Math.round((safeSec % 1) * 1000);
+  const totalSec = Math.floor(safeSec) + (ms === 1000 ? 1 : 0);
+  const finalMs = ms === 1000 ? 0 : ms;
+  const s = totalSec % 60;
+  const m = Math.floor(totalSec / 60) % 60;
+  const h = Math.floor(totalSec / 3600);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(finalMs).padStart(3, "0")}`;
+}
+
+function computeSplitTimingAndWords(seg, beforeText, afterText) {
+  const start = Math.max(0, Number(seg.start) || 0);
+  const end = Math.max(start, Number(seg.end) || start);
+  const totalDur = Math.max(0, end - start);
+
+  const normBefore = beforeText.replace(/\s+/g, "");
+  const normAfter = afterText.replace(/\s+/g, "");
+  const len1 = normBefore.length || beforeText.length;
+  const len2 = normAfter.length || afterText.length;
+  const ratio = len1 / Math.max(1, len1 + len2);
+
+  let seg1End = Number((start + totalDur * ratio).toFixed(3));
+  let seg2Start = seg1End;
+  let seg1Words = [];
+  let seg2Words = [];
+
+  if (Array.isArray(seg.words) && seg.words.length >= 2) {
+    const wordNorms = seg.words.map((w) => String(w.word || "").replace(/\s+/g, ""));
+    const wordsJoined = wordNorms.join("");
+
+    if (wordsJoined.length > 0 && wordsJoined === normBefore + normAfter) {
+      let acc = 0;
+      for (let k = 0; k < seg.words.length; k++) {
+        const wLen = wordNorms[k].length;
+        const nextAcc = acc + wLen;
+        if (nextAcc === normBefore.length && k < seg.words.length - 1) {
+          const w1End = Number(seg.words[k].end);
+          const w2Start = Number(seg.words[k + 1].start);
+          if (Number.isFinite(w1End) && Number.isFinite(w2Start) && w1End > start && w2Start < end) {
+            if (w1End <= w2Start) {
+              seg1End = Number(w1End.toFixed(3));
+              seg2Start = Number(w2Start.toFixed(3));
+            } else {
+              const mid = Number(((w1End + w2Start) / 2).toFixed(3));
+              seg1End = mid;
+              seg2Start = mid;
+            }
+            seg1Words = seg.words.slice(0, k + 1);
+            seg2Words = seg.words.slice(k + 1);
+          }
+          break;
+        } else if (acc < normBefore.length && normBefore.length < nextAcc && wLen > 0) {
+          const wStart = Number(seg.words[k].start);
+          const wEnd = Number(seg.words[k].end);
+          const frac = (normBefore.length - acc) / wLen;
+          if (Number.isFinite(wStart) && Number.isFinite(wEnd) && wEnd >= wStart) {
+            const splitT = Number((wStart + (wEnd - wStart) * frac).toFixed(3));
+            if (splitT > start && splitT < end) {
+              seg1End = splitT;
+              seg2Start = splitT;
+            }
+          }
+          break;
+        }
+        acc = nextAcc;
+      }
+    }
+  }
+
+  return { seg1End, seg2Start, seg1Words, seg2Words };
+}
+
+let sttAutoExportTimer = null;
+function scheduleAutoExportStt() {
+  clearTimeout(sttAutoExportTimer);
+  sttAutoExportTimer = setTimeout(async () => {
+    if (state.sttSegments.length === 0) return;
+    try {
+      const res = await fetch("/api/stt/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ segments: state.sttSegments }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        updateSttDownloadLinks(data);
+      }
+    } catch (_) {
+      // Ignore background auto-export errors
+    }
+  }, 300);
+}
+
+function splitSttSegmentAt(idx, beforeText, afterText) {
+  const seg = state.sttSegments[idx];
+  if (!seg) return;
+
+  const { seg1End, seg2Start, seg1Words, seg2Words } = computeSplitTimingAndWords(seg, beforeText, afterText);
+  const start = Math.max(0, Number(seg.start) || 0);
+  const end = Math.max(seg2Start, Number(seg.end) || seg2Start);
+
+  const seg1 = {
+    ...seg,
+    start,
+    end: seg1End,
+    start_srt: formatSrtTimestampJs(start),
+    end_srt: formatSrtTimestampJs(seg1End),
+    text: beforeText,
+    words: seg1Words,
+  };
+
+  const seg2 = {
+    ...seg,
+    start: seg2Start,
+    end,
+    start_srt: formatSrtTimestampJs(seg2Start),
+    end_srt: formatSrtTimestampJs(end),
+    text: afterText,
+    words: seg2Words,
+  };
+
+  state.sttSegments.splice(idx, 1, seg1, seg2);
+  state.sttSegments.forEach((s, i) => {
+    s.index = i + 1;
+  });
+
+  updateSttSegmentCountBadge();
+  renderSttSegmentsEditor(idx + 1, 0);
+  scheduleAutoExportStt();
+}
 
 function updateSttDownloadLinks(data) {
   sttDownloadLinks.innerHTML = "";
@@ -957,7 +1105,7 @@ function updateSttDownloadLinks(data) {
   }
 }
 
-function renderSttSegmentsEditor() {
+function renderSttSegmentsEditor(focusIdx = null, caretPos = 0) {
   sttSegmentsList.innerHTML = "";
   if (state.sttSegments.length === 0) {
     sttSegmentsList.innerHTML = `<div style="padding: 36px; text-align: center; color: var(--text-muted);">인식된 음성이 없습니다.</div>`;
@@ -974,7 +1122,7 @@ function renderSttSegmentsEditor() {
         <span>→</span>
         <input type="number" step="0.1" value="${seg.end}" data-idx="${idx}" data-field="end" aria-label="종료 시간(초)" />
       </div>
-      <input type="text" class="stt-text-input" value="${escapeHtml(seg.text)}" data-idx="${idx}" data-field="text" aria-label="자막 텍스트" />
+      <input type="text" class="stt-text-input" value="${escapeHtml(seg.text)}" data-idx="${idx}" data-field="text" placeholder="Enter를 누르면 커서 위치에서 자막이 분리됩니다" aria-label="자막 텍스트" />
       <button type="button" class="btn btn-sm" data-seek="${seg.start}">재생</button>
     `;
 
@@ -985,19 +1133,50 @@ function renderSttSegmentsEditor() {
         if (f === "text") {
           state.sttSegments[i].text = e.target.value;
         } else {
-          state.sttSegments[i][f] = parseFloat(e.target.value) || 0;
+          const numVal = parseFloat(e.target.value) || 0;
+          state.sttSegments[i][f] = numVal;
+          state.sttSegments[i][`${f}_srt`] = formatSrtTimestampJs(numVal);
         }
+        scheduleAutoExportStt();
       });
     });
 
+    const textInput = row.querySelector(".stt-text-input");
+    if (textInput) {
+      textInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) {
+          e.preventDefault();
+          const fullText = textInput.value;
+          const selStart = textInput.selectionStart ?? fullText.length;
+          const selEnd = textInput.selectionEnd ?? selStart;
+          const beforeText = fullText.slice(0, selStart).trim();
+          const afterText = fullText.slice(selEnd).trim();
+          if (!beforeText || !afterText) {
+            return;
+          }
+          splitSttSegmentAt(idx, beforeText, afterText);
+        }
+      });
+    }
+
     const seekBtn = row.querySelector("[data-seek]");
     seekBtn.addEventListener("click", () => {
-      sttVideoPreview.currentTime = parseFloat(seg.start) || 0;
+      sttVideoPreview.currentTime = parseFloat(state.sttSegments[idx]?.start) || 0;
       sttVideoPreview.play();
     });
 
     sttSegmentsList.appendChild(row);
   });
+
+  if (focusIdx !== null) {
+    const targetInput = sttSegmentsList.querySelector(`.stt-text-input[data-idx="${focusIdx}"]`);
+    if (targetInput) {
+      targetInput.focus();
+      try {
+        targetInput.setSelectionRange(caretPos, caretPos);
+      } catch (_) {}
+    }
+  }
 }
 
 btnSaveEditedSrt.addEventListener("click", async () => {

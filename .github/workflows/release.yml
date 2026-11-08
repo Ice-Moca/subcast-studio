@@ -60,6 +60,8 @@ jobs:
             --collect-all faster_whisper \
             --collect-all ctranslate2 \
             server.py
+          if command -v ffmpeg >/dev/null 2>&1; then cp "$(command -v ffmpeg)" dist/SUBCAST-STUDIO/; fi
+          if command -v ffprobe >/dev/null 2>&1; then cp "$(command -v ffprobe)" dist/SUBCAST-STUDIO/; fi
           powershell Compress-Archive -Path "dist/SUBCAST-STUDIO" -DestinationPath "${{ matrix.artifact_name }}.zip"
 
       - name: Upload Release Asset
