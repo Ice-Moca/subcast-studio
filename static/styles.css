@@ -638,6 +638,35 @@ input[type="file"]::file-selector-button:hover {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+.stage-backdrop-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stage-bg-color-wrap {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(36, 41, 51, 0.85);
+}
+
+.stage-bg-color-wrap input[type="color"] {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+
+.stage-bg-color-wrap input[type="color"]::-webkit-color-swatch {
+  border-radius: 50%;
+}
+
+.stage-bg-color-wrap .color-hex {
+  width: 64px;
+  font-size: 0.75rem !important;
 }
 
 .monitor-frame {
@@ -658,8 +687,9 @@ input[type="file"]::file-selector-button:hover {
   background: repeating-conic-gradient(var(--color-1) 0 25%, var(--color-2) 0 50%) 0 / 24px 24px;
 }
 
+.monitor-frame.bg-color,
 .monitor-frame.bg-dark {
-  background: #161920;
+  background: var(--stage-bg-color, #161920);
 }
 
 .monitor-frame.bg-green {

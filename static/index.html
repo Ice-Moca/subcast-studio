@@ -182,11 +182,19 @@ TTS 성우는 제외하고 자연스럽게 읽습니다!</textarea>
         <div class="stage-bar">
           <span class="section-heading">16:9 미리보기 <span class="mono-val" style="margin-left: 6px;">1920×1080</span></span>
 
-          <!-- Backdrop Pill Toggle -->
-          <div class="devguide-pill-list" role="group" aria-label="배경 전환">
-            <button type="button" class="devguide-pill-trigger backdrop-btn active" data-bg="bg-checker" style="padding: 5px 12px; font-size: 0.76rem;">투명 격자</button>
-            <button type="button" class="devguide-pill-trigger backdrop-btn" data-bg="bg-dark" style="padding: 5px 12px; font-size: 0.76rem;">다크</button>
-            <button type="button" class="devguide-pill-trigger backdrop-btn" data-bg="bg-green" style="padding: 5px 12px; font-size: 0.76rem;">크로마키</button>
+          <div class="stage-backdrop-controls">
+            <!-- Backdrop Pill Toggle -->
+            <div class="devguide-pill-list" role="group" aria-label="배경 전환">
+              <button type="button" class="devguide-pill-trigger backdrop-btn active" data-bg="bg-checker" style="padding: 5px 12px; font-size: 0.76rem;">투명 격자</button>
+              <button type="button" class="devguide-pill-trigger backdrop-btn" data-bg="bg-color" style="padding: 5px 12px; font-size: 0.76rem;">색상 배경</button>
+              <button type="button" class="devguide-pill-trigger backdrop-btn" data-bg="bg-green" style="padding: 5px 12px; font-size: 0.76rem;">크로마키</button>
+            </div>
+
+            <!-- Stage Background Color Picker (shown when 색상 배경 is active) -->
+            <div class="color-picker-wrap stage-bg-color-wrap" id="stage-bg-color-wrap" style="display: none;">
+              <input type="color" id="stage-bg-color-picker" value="#161920" aria-label="배경 색상 선택" />
+              <input type="text" id="stage-bg-color-hex" class="color-hex" value="#161920" aria-label="배경 색상 HEX" />
+            </div>
           </div>
         </div>
 

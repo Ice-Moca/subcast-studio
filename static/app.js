@@ -7,6 +7,7 @@ const state = {
   fonts: [],
   loadedFontFaces: new Set(),
   sttSegments: [],
+  stageBgMode: "bg-checker",
 };
 
 // DOM References
@@ -83,6 +84,9 @@ const monitorStage = document.getElementById("monitor-stage");
 const previewCanvas = document.getElementById("preview-canvas");
 const previewLineIndicator = document.getElementById("preview-line-indicator");
 const backdropBtns = document.querySelectorAll(".backdrop-btn");
+const stageBgColorWrap = document.getElementById("stage-bg-color-wrap");
+const stageBgColorPicker = document.getElementById("stage-bg-color-picker");
+const stageBgColorHex = document.getElementById("stage-bg-color-hex");
 const presetChips = document.querySelectorAll(".preset-chip");
 
 const exportFormatSelect = document.getElementById("export-format-select");
@@ -122,15 +126,62 @@ tabButtons.forEach((btn) => {
   });
 });
 
-// Backdrop Switcher for 16:9 Monitor
+// Backdrop Switcher & Stage Background Color Picker for 16:9 Monitor
+if (stageBgColorPicker && stageBgColorHex) {
+  const savedBgColor = localStorage.getItem("stage_bg_color");
+  if (savedBgColor && /^#[0-9A-Fa-f]{6}$/.test(savedBgColor)) {
+    stageBgColorPicker.value = savedBgColor;
+    stageBgColorHex.value = savedBgColor.toUpperCase();
+  }
+}
+
+function syncStageBackdropUI() {
+  const bgColor = stageBgColorPicker ? stageBgColorPicker.value : "#161920";
+  monitorStage.style.setProperty("--stage-bg-color", bgColor);
+  if (stageBgColorWrap) {
+    stageBgColorWrap.style.display = state.stageBgMode === "bg-color" ? "inline-flex" : "none";
+  }
+  if (renderedVideoPlayer) {
+    if (state.stageBgMode === "bg-color") {
+      renderedVideoPlayer.style.background = bgColor;
+    } else if (state.stageBgMode === "bg-green") {
+      renderedVideoPlayer.style.background = "#00b140";
+    } else {
+      renderedVideoPlayer.style.background =
+        "repeating-conic-gradient(#262b36 0 25%, #323947 0 50%) 0 / 20px 20px";
+    }
+  }
+}
+
+if (stageBgColorPicker && stageBgColorHex) {
+  stageBgColorPicker.addEventListener("input", () => {
+    const val = stageBgColorPicker.value.toUpperCase();
+    stageBgColorHex.value = val;
+    localStorage.setItem("stage_bg_color", val);
+    syncStageBackdropUI();
+  });
+  stageBgColorHex.addEventListener("input", () => {
+    const val = stageBgColorHex.value.trim();
+    if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+      stageBgColorPicker.value = val;
+      localStorage.setItem("stage_bg_color", val.toUpperCase());
+      syncStageBackdropUI();
+    }
+  });
+}
+
 backdropBtns.forEach((btn) => {
   btn.addEventListener("click", () => {
     backdropBtns.forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    monitorStage.classList.remove("bg-checker", "bg-dark", "bg-green");
+    state.stageBgMode = btn.dataset.bg;
+    monitorStage.classList.remove("bg-checker", "bg-color", "bg-dark", "bg-green");
     monitorStage.classList.add(btn.dataset.bg);
+    syncStageBackdropUI();
   });
 });
+
+syncStageBackdropUI();
 
 // "No Voice" Dev Guide Pill Toggle Handler
 function syncNoVoiceUI() {
@@ -771,6 +822,8 @@ btnRenderVideo.addEventListener("click", async () => {
     bg_box_color: bgboxColorPicker.value,
     bg_box_opacity: parseInt(bgboxOpacitySlider.value, 10) / 100.0,
     y_position_pct: parseFloat(subYSlider.value),
+    stage_bg_mode: state.stageBgMode,
+    stage_bg_color: stageBgColorPicker ? stageBgColorPicker.value : "#161920",
     export_format: exportFormatSelect.value,
   };
 

@@ -384,12 +384,14 @@ def render_subtitle_frame_png(
     max_width_px: int = 1640,
     canvas_width: int = 1920,
     canvas_height: int = 1080,
+    canvas_bg_rgba: tuple = (0, 0, 0, 0),
 ):
     """
-    Renders a single 1920x1080 RGBA transparent PNG containing the styled subtitle
-    with exact drop shadow, Gaussian blur, outline stroke, and optional background box.
+    Renders a single 1920x1080 RGBA PNG containing the styled subtitle
+    with exact drop shadow, Gaussian blur, outline stroke, optional background box,
+    and optional solid/chroma stage background color.
     """
-    canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+    canvas = Image.new("RGBA", (canvas_width, canvas_height), canvas_bg_rgba)
     if not text.strip():
         canvas.save(output_png, "PNG")
         return
@@ -551,6 +553,8 @@ class RenderVideoRequest(BaseModel):
     bg_box_padding_y: int = 16
     bg_box_radius: int = 14
     y_position_pct: float = 84.0
+    stage_bg_mode: str = "bg-checker"
+    stage_bg_color: str = "#161920"
     # Output format: "mov" (ProRes 4444 alpha), "webm" (VP9 alpha), or "both"
     export_format: str = "both"
 
@@ -735,9 +739,17 @@ async def render_tts_transparent_video(req: RenderVideoRequest):
     audio_entries = []
     video_entries = []
 
-    # Blank transparent PNG for pauses
+    # Determine canvas background RGBA based on stage_bg_mode
+    if req.stage_bg_mode in ("bg-color", "bg-dark"):
+        canvas_bg_rgba = hex_to_rgba(req.stage_bg_color or "#161920", 1.0)
+    elif req.stage_bg_mode == "bg-green":
+        canvas_bg_rgba = hex_to_rgba("#00B140", 1.0)
+    else:
+        canvas_bg_rgba = (0, 0, 0, 0)
+
+    # Blank PNG for pauses
     blank_png = job_dir / "blank.png"
-    Image.new("RGBA", (1920, 1080), (0, 0, 0, 0)).save(blank_png, "PNG")
+    Image.new("RGBA", (1920, 1080), canvas_bg_rgba).save(blank_png, "PNG")
 
     for idx, display_line in enumerate(raw_lines):
         if req.spoken_lines is not None and idx < len(req.spoken_lines):
@@ -809,6 +821,7 @@ async def render_tts_transparent_video(req: RenderVideoRequest):
             bg_box_padding_y=req.bg_box_padding_y,
             bg_box_radius=req.bg_box_radius,
             y_position_pct=req.y_position_pct,
+            canvas_bg_rgba=canvas_bg_rgba,
         )
 
         start_t = current_time
