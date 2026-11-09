@@ -121,6 +121,25 @@ def generate_fallback_wav(output_path: Path, duration: float = 2.0):
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+_typecast_voice_models: Dict[str, List[str]] = {}
+
+
+def _map_typecast_emotion_preset(emotion: str) -> str:
+    if not emotion:
+        return "normal"
+    clean = emotion.strip().lower()
+    mapping = {
+        "normal-1": "normal",
+        "happy-1": "happy",
+        "sad-1": "sad",
+        "angry-1": "angry",
+        "tonemid-1": "tonedown",
+    }
+    if clean in mapping:
+        return mapping[clean]
+    return clean.split("-")[0] if "-" in clean else clean
+
+
 async def synthesize_typecast(
     text: str,
     api_key: str,
@@ -132,46 +151,94 @@ async def synthesize_typecast(
 ) -> dict:
     """
     Calls Typecast API to synthesize speech and downloads the resulting audio.
-    Supports standard Typecast API v1/v2 speak endpoints.
+    Supports official Typecast API (`https://api.typecast.ai/v1/text-to-speech`)
+    as well as legacy Typecast speak endpoints.
     """
-    headers = {
-        "Authorization": f"Bearer {api_key.strip()}",
-        "X-API-KEY": api_key.strip(),
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "text": text,
-        "actor_id": actor_id.strip(),
-        "lang": "auto",
-        "xapi_hd": True,
-        "model_version": "latest",
-        "tempo": speed,
-        "pitch": pitch,
-        "emotion_tone_preset": emotion or "normal-1",
-    }
+    clean_key = api_key.strip()
+    clean_actor = actor_id.strip()
+    emotion_preset = _map_typecast_emotion_preset(emotion)
 
+    candidate_models = list(_typecast_voice_models.get(clean_actor, []))
+    for fallback_m in ("ssfm-v31", "ssfm-v30", "ssfm-v21"):
+        if fallback_m not in candidate_models:
+            candidate_models.append(fallback_m)
+
+    last_err_detail = ""
     async with httpx.AsyncClient(timeout=60.0) as client:
-        # Try Typecast v1/speak endpoint
-        resp = await client.post("https://typecast.ai/api/speak", headers=headers, json=payload)
+        # 1. Try official Typecast API (https://api.typecast.ai/v1/text-to-speech)
+        tts_headers = {
+            "X-API-KEY": clean_key,
+            "Content-Type": "application/json",
+        }
+        for model_ver in candidate_models:
+            v1_payload = {
+                "voice_id": clean_actor,
+                "text": text,
+                "model": model_ver,
+                "prompt": {
+                    "emotion_type": "preset",
+                    "emotion_preset": emotion_preset,
+                },
+                "output": {
+                    "volume": 100,
+                    "audio_pitch": int(pitch),
+                    "audio_tempo": float(speed),
+                    "audio_format": "wav",
+                },
+            }
+            try:
+                resp = await client.post(
+                    "https://api.typecast.ai/v1/text-to-speech",
+                    headers=tts_headers,
+                    json=v1_payload,
+                )
+                if resp.status_code == 200 and resp.content:
+                    output_path.write_bytes(resp.content)
+                    return {"engine": "typecast", "path": str(output_path)}
+                last_err_detail = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                # If unauthorized, no need to retry other ssfm models on the same endpoint
+                if resp.status_code in (401, 403):
+                    break
+            except Exception as e:
+                last_err_detail = str(e)
+
+        # 2. Fallback to legacy Typecast v1/speak endpoint
+        legacy_headers = {
+            "Authorization": f"Bearer {clean_key}",
+            "X-API-KEY": clean_key,
+            "Content-Type": "application/json",
+        }
+        legacy_payload = {
+            "text": text,
+            "actor_id": clean_actor,
+            "lang": "auto",
+            "xapi_hd": True,
+            "model_version": "latest",
+            "tempo": speed,
+            "pitch": pitch,
+            "emotion_tone_preset": emotion or "normal-1",
+        }
+        resp = await client.post("https://typecast.ai/api/speak", headers=legacy_headers, json=legacy_payload)
         if resp.status_code not in (200, 201, 202):
+            detail_msg = last_err_detail or f"HTTP {resp.status_code}: {resp.text[:300]}"
             raise HTTPException(
                 status_code=400,
-                detail=f"Typecast API 호출 실패 (HTTP {resp.status_code}): {resp.text[:300]}",
+                detail=f"Typecast API 호출 실패 ({detail_msg})",
             )
 
         data = resp.json()
-        result_obj = data.get("result", data)
+        result_obj = data.get("result", data) if isinstance(data, dict) else {}
 
-        # Case 1: Direct audio download URL or speak_v2_url polling
         speak_url = result_obj.get("speak_v2_url") or result_obj.get("speak_url") or result_obj.get("url")
         audio_download_url = result_obj.get("audio_download_url") or result_obj.get("audio_url")
 
         if not audio_download_url and speak_url:
             for _ in range(45):
                 await asyncio.sleep(1.0)
-                poll = await client.get(speak_url, headers=headers)
+                poll = await client.get(speak_url, headers=legacy_headers)
                 if poll.status_code == 200:
-                    p_data = poll.json().get("result", poll.json())
+                    p_json = poll.json()
+                    p_data = p_json.get("result", p_json) if isinstance(p_json, dict) else {}
                     status = p_data.get("status")
                     if status == "done":
                         audio_download_url = p_data.get("audio_download_url") or p_data.get("audio_url")
@@ -555,36 +622,91 @@ async def preview_script_lines(req: ScriptPreviewRequest):
 
 @app.post("/api/typecast/actors")
 async def fetch_typecast_actors(req: TypecastVoiceCheckRequest):
-    if not req.api_key.strip():
+    clean_key = req.api_key.strip()
+    if not clean_key:
         raise HTTPException(status_code=400, detail="Typecast API Key를 입력해 주세요.")
-    headers = {
-        "Authorization": f"Bearer {req.api_key.strip()}",
-        "X-API-KEY": req.api_key.strip(),
-        "Accept": "application/json",
-    }
+
+    endpoints = [
+        ("https://api.typecast.ai/v3/voices", {"X-API-KEY": clean_key, "Accept": "application/json"}),
+        ("https://api.typecast.ai/v2/voices", {"X-API-KEY": clean_key, "Accept": "application/json"}),
+        ("https://api.typecast.ai/v1/voices", {"X-API-KEY": clean_key, "Accept": "application/json"}),
+        ("https://typecast.ai/api/actor", {"Authorization": f"Bearer {clean_key}", "X-API-KEY": clean_key, "Accept": "application/json"}),
+        ("https://api.typecast.ai/v1/actors", {"Authorization": f"Bearer {clean_key}", "X-API-KEY": clean_key, "Accept": "application/json"}),
+    ]
+
+    last_status = None
+    last_body = ""
     async with httpx.AsyncClient(timeout=15.0) as client:
-        for url in ["https://typecast.ai/api/actor", "https://api.typecast.ai/v1/actors"]:
+        for url, hdrs in endpoints:
             try:
-                resp = await client.get(url, headers=headers)
+                resp = await client.get(url, headers=hdrs)
+                last_status = resp.status_code
                 if resp.status_code == 200:
                     data = resp.json()
-                    actors_raw = data.get("result", data.get("actors", data))
-                    if isinstance(actors_raw, list):
+                    if isinstance(data, list):
+                        actors_raw = data
+                    elif isinstance(data, dict):
+                        actors_raw = (
+                            data.get("voices")
+                            or data.get("result")
+                            or data.get("actors")
+                            or data.get("data")
+                            or []
+                        )
+                    else:
+                        actors_raw = []
+
+                    if isinstance(actors_raw, list) and len(actors_raw) > 0:
                         actors = []
                         for a in actors_raw:
+                            if not isinstance(a, dict):
+                                continue
+                            vid = a.get("voice_id") or a.get("actor_id") or a.get("id") or ""
+                            if not vid:
+                                continue
+
+                            raw_name = a.get("voice_name") or a.get("name") or "Actor"
+                            if isinstance(raw_name, dict):
+                                disp_name = (
+                                    raw_name.get("kor")
+                                    or raw_name.get("ko")
+                                    or raw_name.get("eng")
+                                    or raw_name.get("en")
+                                    or next(iter(raw_name.values()), "Actor")
+                                )
+                            else:
+                                disp_name = str(raw_name)
+
+                            models_field = a.get("models")
+                            if isinstance(models_field, list):
+                                vers = [
+                                    m.get("version")
+                                    for m in models_field
+                                    if isinstance(m, dict) and m.get("version")
+                                ]
+                                if vers:
+                                    _typecast_voice_models[vid] = vers
+                            elif isinstance(a.get("model"), str):
+                                _typecast_voice_models[vid] = [a["model"]]
+
+                            lang = a.get("language") or a.get("gender") or "ko"
                             actors.append({
-                                "actor_id": a.get("actor_id") or a.get("id") or "",
-                                "name": a.get("name", {}).get("ko")
-                                if isinstance(a.get("name"), dict)
-                                else (a.get("name") or "Actor"),
-                                "language": a.get("language") or "ko",
+                                "actor_id": vid,
+                                "name": disp_name,
+                                "language": lang,
                             })
-                        return {"actors": actors}
-            except Exception:
+                        if actors:
+                            return {"actors": actors}
+                else:
+                    last_body = resp.text[:200]
+            except Exception as e:
+                last_body = str(e)
                 continue
+
+    err_hint = f" (HTTP {last_status}: {last_body})" if last_status else ""
     raise HTTPException(
         status_code=400,
-        detail="Typecast 성우 목록을 불러오지 못했습니다. API Key를 확인하거나 Actor ID를 직접 입력해 주세요.",
+        detail=f"Typecast 성우 목록을 불러오지 못했습니다{err_hint}. API Key를 확인하거나 Actor ID를 직접 입력해 주세요.",
     )
 
 
